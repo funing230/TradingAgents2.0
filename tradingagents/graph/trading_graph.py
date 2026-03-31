@@ -9,6 +9,7 @@ from typing import Dict, Any, Tuple, List, Optional
 from langgraph.prebuilt import ToolNode
 
 from tradingagents.llm_clients import create_llm_client
+from tradingagents.llm_clients.pool import LLMPool
 
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -71,28 +72,12 @@ class TradingAgentsGraph:
             exist_ok=True,
         )
 
-        # Initialize LLMs with provider-specific thinking configuration
-        llm_kwargs = self._get_provider_kwargs()
+        # Initialize LLM Pool (multi-model, role-based)
+        self.llm_pool = LLMPool(self.config, callbacks=self.callbacks)
 
-        # Add callbacks to kwargs if provided (passed to LLM constructor)
-        if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
-
-        deep_client = create_llm_client(
-            provider=self.config["llm_provider"],
-            model=self.config["deep_think_llm"],
-            base_url=self.config.get("backend_url"),
-            **llm_kwargs,
-        )
-        quick_client = create_llm_client(
-            provider=self.config["llm_provider"],
-            model=self.config["quick_think_llm"],
-            base_url=self.config.get("backend_url"),
-            **llm_kwargs,
-        )
-
-        self.deep_thinking_llm = deep_client.get_llm()
-        self.quick_thinking_llm = quick_client.get_llm()
+        # Legacy compatibility: expose deep/quick for components that use them
+        self.deep_thinking_llm = self.llm_pool.get_llm("research_manager")
+        self.quick_thinking_llm = self.llm_pool.get_llm("market_analyst")
         
         # Initialize memories
         self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
@@ -110,15 +95,16 @@ class TradingAgentsGraph:
             max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
         )
         self.graph_setup = GraphSetup(
-            self.quick_thinking_llm,
-            self.deep_thinking_llm,
-            self.tool_nodes,
-            self.bull_memory,
-            self.bear_memory,
-            self.trader_memory,
-            self.invest_judge_memory,
-            self.portfolio_manager_memory,
-            self.conditional_logic,
+            llm_pool=self.llm_pool,
+            quick_thinking_llm=self.quick_thinking_llm,
+            deep_thinking_llm=self.deep_thinking_llm,
+            tool_nodes=self.tool_nodes,
+            bull_memory=self.bull_memory,
+            bear_memory=self.bear_memory,
+            trader_memory=self.trader_memory,
+            invest_judge_memory=self.invest_judge_memory,
+            portfolio_manager_memory=self.portfolio_manager_memory,
+            conditional_logic=self.conditional_logic,
         )
 
         self.propagator = Propagator()

@@ -1,6 +1,6 @@
 # TradingAgents/graph/setup.py
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
@@ -25,8 +25,18 @@ class GraphSetup:
         invest_judge_memory,
         portfolio_manager_memory,
         conditional_logic: ConditionalLogic,
+        llm_pool=None,
     ):
-        """Initialize with required components."""
+        """Initialize with required components.
+
+        Args:
+            quick_thinking_llm: Legacy quick LLM (fallback)
+            deep_thinking_llm: Legacy deep LLM (fallback)
+            tool_nodes: Tool nodes for each analyst type
+            bull_memory, bear_memory, ...: Agent memories
+            conditional_logic: Conditional logic for graph edges
+            llm_pool: Optional LLMPool for role-based model assignment
+        """
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
@@ -36,6 +46,13 @@ class GraphSetup:
         self.invest_judge_memory = invest_judge_memory
         self.portfolio_manager_memory = portfolio_manager_memory
         self.conditional_logic = conditional_logic
+        self.llm_pool = llm_pool
+
+    def _get_llm(self, role: str, default_tier: str = "quick"):
+        """Get LLM for a role. Uses pool if available, else legacy fallback."""
+        if self.llm_pool:
+            return self.llm_pool.get_llm(role)
+        return self.deep_thinking_llm if default_tier == "deep" else self.quick_thinking_llm
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -52,57 +69,65 @@ class GraphSetup:
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
-        # Create analyst nodes
+        # Create analyst nodes (each can use a different model)
         analyst_nodes = {}
         delete_nodes = {}
         tool_nodes = {}
 
         if "market" in selected_analysts:
             analyst_nodes["market"] = create_market_analyst(
-                self.quick_thinking_llm
+                self._get_llm("market_analyst")
             )
             delete_nodes["market"] = create_msg_delete()
             tool_nodes["market"] = self.tool_nodes["market"]
 
         if "social" in selected_analysts:
             analyst_nodes["social"] = create_social_media_analyst(
-                self.quick_thinking_llm
+                self._get_llm("social_analyst")
             )
             delete_nodes["social"] = create_msg_delete()
             tool_nodes["social"] = self.tool_nodes["social"]
 
         if "news" in selected_analysts:
             analyst_nodes["news"] = create_news_analyst(
-                self.quick_thinking_llm
+                self._get_llm("news_analyst")
             )
             delete_nodes["news"] = create_msg_delete()
             tool_nodes["news"] = self.tool_nodes["news"]
 
         if "fundamentals" in selected_analysts:
             analyst_nodes["fundamentals"] = create_fundamentals_analyst(
-                self.quick_thinking_llm
+                self._get_llm("fundamentals_analyst")
             )
             delete_nodes["fundamentals"] = create_msg_delete()
             tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
 
-        # Create researcher and manager nodes
+        # Create researcher and manager nodes (role-specific models)
         bull_researcher_node = create_bull_researcher(
-            self.quick_thinking_llm, self.bull_memory
+            self._get_llm("bull_researcher"), self.bull_memory
         )
         bear_researcher_node = create_bear_researcher(
-            self.quick_thinking_llm, self.bear_memory
+            self._get_llm("bear_researcher"), self.bear_memory
         )
         research_manager_node = create_research_manager(
-            self.deep_thinking_llm, self.invest_judge_memory
+            self._get_llm("research_manager", "deep"), self.invest_judge_memory
         )
-        trader_node = create_trader(self.quick_thinking_llm, self.trader_memory)
+        trader_node = create_trader(
+            self._get_llm("trader"), self.trader_memory
+        )
 
         # Create risk analysis nodes
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
+        aggressive_analyst = create_aggressive_debator(
+            self._get_llm("aggressive_debater")
+        )
+        neutral_analyst = create_neutral_debator(
+            self._get_llm("neutral_debater")
+        )
+        conservative_analyst = create_conservative_debator(
+            self._get_llm("conservative_debater")
+        )
         portfolio_manager_node = create_portfolio_manager(
-            self.deep_thinking_llm, self.portfolio_manager_memory
+            self._get_llm("portfolio_manager", "deep"), self.portfolio_manager_memory
         )
 
         # Create workflow
