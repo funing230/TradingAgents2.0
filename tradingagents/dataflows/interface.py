@@ -1,4 +1,5 @@
 from typing import Annotated
+import pandas as pd
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -23,6 +24,41 @@ from .alpha_vantage import (
     get_global_news as get_alpha_vantage_global_news,
 )
 from .alpha_vantage_common import AlphaVantageRateLimitError
+from .tushare_provider import (
+    get_stock_data as get_tushare_stock_data,
+    get_indicators as get_tushare_indicators,
+    get_fundamentals as get_tushare_fundamentals,
+    get_balance_sheet as get_tushare_balance_sheet,
+    get_cashflow as get_tushare_cashflow,
+    get_income_statement as get_tushare_income_statement,
+    get_news as get_tushare_news,
+    get_global_news as get_tushare_global_news,
+    get_insider_transactions as get_tushare_insider_transactions,
+    TushareRateLimitError,
+)
+from .akshare_provider import (
+    get_stock_data as get_akshare_stock_data,
+    get_indicators as get_akshare_indicators,
+    get_fundamentals as get_akshare_fundamentals,
+    get_balance_sheet as get_akshare_balance_sheet,
+    get_cashflow as get_akshare_cashflow,
+    get_income_statement as get_akshare_income_statement,
+    get_news as get_akshare_news,
+    get_global_news as get_akshare_global_news,
+    get_insider_transactions as get_akshare_insider_transactions,
+    AkShareRateLimitError,
+)
+
+from .resilience import (
+    RateLimitError,
+    DataSourceError,
+    yfinance_limiter,
+    alpha_vantage_limiter,
+    tushare_limiter,
+    akshare_limiter,
+    load_file_cache,
+    save_file_cache,
+)
 
 # Configuration and routing logic
 from .config import get_config
@@ -63,6 +99,8 @@ TOOLS_CATEGORIES = {
 VENDOR_LIST = [
     "yfinance",
     "alpha_vantage",
+    "tushare",
+    "akshare",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -71,41 +109,59 @@ VENDOR_METHODS = {
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
+        "tushare": get_tushare_stock_data,
+        "akshare": get_akshare_stock_data,
     },
     # technical_indicators
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "tushare": get_tushare_indicators,
+        "akshare": get_akshare_indicators,
     },
     # fundamental_data
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        "tushare": get_tushare_fundamentals,
+        "akshare": get_akshare_fundamentals,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        "tushare": get_tushare_balance_sheet,
+        "akshare": get_akshare_balance_sheet,
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        "tushare": get_tushare_cashflow,
+        "akshare": get_akshare_cashflow,
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        "tushare": get_tushare_income_statement,
+        "akshare": get_akshare_income_statement,
     },
     # news_data
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        "tushare": get_tushare_news,
+        "akshare": get_akshare_news,
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
+        "tushare": get_tushare_global_news,
+        "akshare": get_akshare_global_news,
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        "tushare": get_tushare_insider_transactions,
+        "akshare": get_akshare_insider_transactions,
     },
 }
 
@@ -131,8 +187,22 @@ def get_vendor(category: str, method: str = None) -> str:
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
 
+# Per-vendor rate limiters
+VENDOR_LIMITERS = {
+    "yfinance": yfinance_limiter,
+    "alpha_vantage": alpha_vantage_limiter,
+    "tushare": tushare_limiter,
+    "akshare": akshare_limiter,
+}
+
 def route_to_vendor(method: str, *args, **kwargs):
-    """Route method calls to appropriate vendor implementation with fallback support."""
+    """Route method calls to appropriate vendor implementation with fallback support.
+
+    Features:
+      - Per-vendor rate limiting (throttle before each call)
+      - Automatic fallback on rate-limit or transient errors
+      - File-based parquet cache for OHLCV data (get_stock_data)
+    """
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
@@ -147,6 +217,7 @@ def route_to_vendor(method: str, *args, **kwargs):
         if vendor not in fallback_vendors:
             fallback_vendors.append(vendor)
 
+    errors = []
     for vendor in fallback_vendors:
         if vendor not in VENDOR_METHODS[method]:
             continue
@@ -154,9 +225,54 @@ def route_to_vendor(method: str, *args, **kwargs):
         vendor_impl = VENDOR_METHODS[method][vendor]
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
-        try:
-            return impl_func(*args, **kwargs)
-        except AlphaVantageRateLimitError:
-            continue  # Only rate limits trigger fallback
+        # Check file cache for stock data
+        if method == "get_stock_data" and len(args) >= 3:
+            cached = load_file_cache(vendor, args[0], args[1], args[2])
+            if cached is not None and not cached.empty:
+                return cached.to_csv()
 
-    raise RuntimeError(f"No available vendor for '{method}'")
+        # Apply rate limiting
+        limiter = VENDOR_LIMITERS.get(vendor)
+        if limiter:
+            limiter.wait()
+
+        try:
+            result = impl_func(*args, **kwargs)
+
+            # Cache stock data results
+            if method == "get_stock_data" and len(args) >= 3 and isinstance(result, str):
+                try:
+                    import io
+                    # Skip header lines starting with #
+                    lines = result.split('\n')
+                    csv_start = 0
+                    for i, line in enumerate(lines):
+                        if line and not line.startswith('#'):
+                            csv_start = i
+                            break
+                    csv_data = '\n'.join(lines[csv_start:])
+                    df = pd.read_csv(io.StringIO(csv_data))
+                    if not df.empty:
+                        save_file_cache(df, vendor, args[0], args[1], args[2])
+                except Exception:
+                    pass  # Cache save failure is non-fatal
+
+            return result
+        except (AlphaVantageRateLimitError, TushareRateLimitError,
+                AkShareRateLimitError, RateLimitError):
+            errors.append(f"{vendor}: rate limited")
+            continue  # Rate limits trigger fallback
+        except Exception as e:
+            # For transient connection errors, also try next vendor
+            err_msg = str(e).lower()
+            if any(kw in err_msg for kw in (
+                "connection", "timeout", "remote", "reset", "refused",
+                "too many requests", "rate limit",
+            )):
+                errors.append(f"{vendor}: {e}")
+                continue
+            raise  # Non-transient errors propagate immediately
+
+    raise RuntimeError(
+        f"No available vendor for '{method}'. Errors: {' | '.join(errors)}"
+    )
