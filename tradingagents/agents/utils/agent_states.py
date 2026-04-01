@@ -74,3 +74,6 @@ class AgentState(MessagesState):
         RiskDebateState, "Current state of the debate on evaluating risk"
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+
+    # Global market context (US indices, macro news) for cross-market analysis
+    global_market_context: Annotated[str, "Global market context (US indices, macro sentiment) for A-share analysis"]
