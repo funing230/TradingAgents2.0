@@ -11,6 +11,7 @@ DEFAULT_CONFIG = {
     # =========================================================
     # LLM Pool — register all available models here
     # Each entry: provider, model name, base_url, api_key source
+    # "modes" defines per-mode kwargs merged on top of base config
     # Add new models without changing any code
     # =========================================================
     "llm_pool": {
@@ -21,6 +22,10 @@ DEFAULT_CONFIG = {
             "api_key_env": "CLAUDE_API_KEY",
             "context_window": 200000,
             "max_tokens": 16384,
+            "modes": {
+                "chat": {},
+                "deepthink": {"reasoning_effort": "high"},
+            },
         },
         "gpt54": {
             "provider": "openai",
@@ -29,6 +34,10 @@ DEFAULT_CONFIG = {
             "api_key_env": "GPT54_API_KEY",
             "context_window": 128000,
             "max_tokens": 8192,
+            "modes": {
+                "chat": {},
+                "deepthink": {"reasoning_effort": "high"},
+            },
         },
         "gemini": {
             "provider": "openai",
@@ -37,6 +46,10 @@ DEFAULT_CONFIG = {
             "api_key_env": "GEMINI_API_KEY",
             "context_window": 2000000,
             "max_tokens": 32768,
+            "modes": {
+                "chat": {},
+                "deepthink": {"thinking_level": "high"},
+            },
         },
         # === 预留扩展位 ===
         # "deepseek": {
@@ -46,6 +59,7 @@ DEFAULT_CONFIG = {
         #     "api_key_env": "DEEPSEEK_API_KEY",
         #     "context_window": 16000,
         #     "max_tokens": 4096,
+        #     "modes": {"chat": {}, "deepthink": {"reasoning_effort": "high"}},
         # },
         # "qwen": {
         #     "provider": "openai",
@@ -54,35 +68,34 @@ DEFAULT_CONFIG = {
         #     "api_key_env": "QWEN_API_KEY",
         #     "context_window": 128000,
         #     "max_tokens": 8192,
-        # },
-        # "deepseek-r1": {
-        #     "provider": "openai",
-        #     "model": "deepseek-reasoner",
-        #     "base_url": "https://api.deepseek.com/v1",
-        #     "api_key_env": "DEEPSEEK_API_KEY",
-        #     "context_window": 64000,
-        #     "max_tokens": 8192,
+        #     "modes": {"chat": {}, "deepthink": {"reasoning_effort": "high"}},
         # },
     },
 
     # =========================================================
     # Role → Model mapping
-    # Map each agent role to a model key from llm_pool
-    # Change assignments without touching any agent code
+    # Each role maps to {"model": <pool_key>, "mode": "chat"|"deepthink"}
+    # Optional "fallback" list for automatic failover
+    # Legacy format (plain string) is still supported as chat mode
     # =========================================================
     "llm_roles": {
-        "market_analyst":       "gpt54",
-        "news_analyst":         "gpt54",
-        "social_analyst":       "gpt54",
-        "fundamentals_analyst": "gpt54",
-        "bull_researcher":      "gpt54",
-        "bear_researcher":      "gpt54",
-        "research_manager":     "claude-opus",    # 主管决策
-        "trader":               "gpt54",
-        "aggressive_debater":   "gemini",
-        "conservative_debater": "gemini",
-        "neutral_debater":      "gemini",
-        "portfolio_manager":    "claude-opus",    # 最终决策
+        "market_analyst":       {"model": "gpt54",       "mode": "chat"},
+        "news_analyst":         {"model": "gpt54",       "mode": "chat"},
+        "social_analyst":       {"model": "gpt54",       "mode": "chat"},
+        "fundamentals_analyst": {"model": "gpt54",       "mode": "chat"},
+        "bull_researcher":      {"model": "gpt54",       "mode": "chat"},
+        "bear_researcher":      {"model": "gpt54",       "mode": "chat"},
+        "research_manager":     {"model": "claude-opus",  "mode": "deepthink",
+                                 "fallback": [{"model": "gpt54", "mode": "deepthink"}]},
+        "trader":               {"model": "gpt54",       "mode": "deepthink"},
+        "aggressive_debater":   {"model": "gemini",      "mode": "chat"},
+        "conservative_debater": {"model": "gemini",      "mode": "chat"},
+        "neutral_debater":      {"model": "gemini",      "mode": "chat"},
+        "portfolio_manager":    {"model": "claude-opus",  "mode": "deepthink",
+                                 "fallback": [{"model": "gpt54", "mode": "deepthink"}]},
+        "reflector":            {"model": "claude-opus",  "mode": "deepthink",
+                                 "fallback": [{"model": "gpt54", "mode": "deepthink"}]},
+        "signal_processor":     {"model": "gpt54",       "mode": "chat"},
     },
 
     # =========================================================

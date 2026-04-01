@@ -1,16 +1,42 @@
 # TradingAgents/graph/reflection.py
 
-from typing import Dict, Any
-from langchain_openai import ChatOpenAI
+from typing import Any, Dict, Optional
+
+
+# Map component type → agent role for pool-based LLM lookup
+_COMPONENT_ROLE = {
+    "BULL": "bull_researcher",
+    "BEAR": "bear_researcher",
+    "TRADER": "trader",
+    "INVEST JUDGE": "research_manager",
+    "PORTFOLIO MANAGER": "portfolio_manager",
+}
 
 
 class Reflector:
-    """Handles reflection on decisions and updating memory."""
+    """Handles reflection on decisions and updating memory.
 
-    def __init__(self, quick_thinking_llm: ChatOpenAI):
-        """Initialize the reflector with an LLM."""
-        self.quick_thinking_llm = quick_thinking_llm
+    Supports two initialization modes:
+      - New: pass llm_pool for role-based model selection
+      - Legacy: pass a single quick_thinking_llm instance
+    """
+
+    def __init__(self, llm_pool=None, quick_thinking_llm=None):
+        """Initialize the reflector.
+
+        Args:
+            llm_pool: LLMPool instance for role-based model selection.
+            quick_thinking_llm: Legacy fallback LLM (used when pool is None).
+        """
+        self.llm_pool = llm_pool
+        self._fallback_llm = quick_thinking_llm
         self.reflection_system_prompt = self._get_reflection_prompt()
+
+    def _get_llm(self, role: str) -> Any:
+        """Get LLM for a role. Uses pool if available, else fallback."""
+        if self.llm_pool:
+            return self.llm_pool.get_llm(role)
+        return self._fallback_llm
 
     def _get_reflection_prompt(self) -> str:
         """Get the system prompt for reflection."""
@@ -58,7 +84,10 @@ Adhere strictly to these instructions, and ensure your output is detailed, accur
     def _reflect_on_component(
         self, component_type: str, report: str, situation: str, returns_losses
     ) -> str:
-        """Generate reflection for a component."""
+        """Generate reflection for a component using role-appropriate model."""
+        role = _COMPONENT_ROLE.get(component_type, "reflector")
+        llm = self._get_llm(role)
+
         messages = [
             ("system", self.reflection_system_prompt),
             (
@@ -67,7 +96,7 @@ Adhere strictly to these instructions, and ensure your output is detailed, accur
             ),
         ]
 
-        result = self.quick_thinking_llm.invoke(messages).content
+        result = llm.invoke(messages).content
         return result
 
     def reflect_bull_researcher(self, current_state, returns_losses, bull_memory):

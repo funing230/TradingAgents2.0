@@ -10,6 +10,7 @@ from langgraph.prebuilt import ToolNode
 
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.llm_clients.pool import LLMPool
+from tradingagents.llm_clients.probe import LLMProbe
 
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -50,6 +51,7 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
+        run_probe: bool = False,
     ):
         """Initialize the trading agents graph and components.
 
@@ -58,6 +60,7 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            run_probe: If True, probe all models at startup and apply results
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
@@ -72,8 +75,18 @@ class TradingAgentsGraph:
             exist_ok=True,
         )
 
-        # Initialize LLM Pool (multi-model, role-based)
+        # Initialize LLM Pool (multi-model, role-based, mode-aware)
         self.llm_pool = LLMPool(self.config, callbacks=self.callbacks)
+
+        # Optional: probe models and apply availability/capability results
+        if run_probe:
+            try:
+                probe = LLMProbe(self.config)
+                probe_results = probe.probe_all(verbose=debug)
+                self.llm_pool.apply_probe_results(probe_results)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Probe failed, continuing without: %s", e)
 
         # Legacy compatibility: expose deep/quick for components that use them
         self.deep_thinking_llm = self.llm_pool.get_llm("research_manager")
@@ -108,8 +121,14 @@ class TradingAgentsGraph:
         )
 
         self.propagator = Propagator()
-        self.reflector = Reflector(self.quick_thinking_llm)
-        self.signal_processor = SignalProcessor(self.quick_thinking_llm)
+        self.reflector = Reflector(
+            llm_pool=self.llm_pool,
+            quick_thinking_llm=self.quick_thinking_llm,
+        )
+        self.signal_processor = SignalProcessor(
+            llm_pool=self.llm_pool,
+            quick_thinking_llm=self.quick_thinking_llm,
+        )
 
         # State tracking
         self.curr_state = None
