@@ -1,7 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 import time
 import json
-from tradingagents.agents.utils.agent_utils import build_instrument_context, get_language_instruction, get_news
+from tradingagents.agents.utils.agent_utils import build_instrument_context, build_global_context_block, get_language_instruction, get_news
 from tradingagents.dataflows.config import get_config
 
 
@@ -9,6 +9,7 @@ def create_social_media_analyst(llm):
     def social_media_analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = build_instrument_context(state["company_of_interest"])
+        global_context = build_global_context_block(state)
 
         tools = [
             get_news,
@@ -31,7 +32,7 @@ def create_social_media_analyst(llm):
                     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
                     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
                     " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
+                    "For your reference, the current date is {current_date}. {instrument_context}{global_context}",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
@@ -41,6 +42,7 @@ def create_social_media_analyst(llm):
         prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
+        prompt = prompt.partial(global_context=global_context)
 
         chain = prompt | llm.bind_tools(tools)
 

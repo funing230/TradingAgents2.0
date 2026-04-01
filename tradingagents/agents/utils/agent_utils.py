@@ -42,6 +42,24 @@ def build_instrument_context(ticker: str) -> str:
         "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
     )
 
+
+def build_global_context_block(state: dict) -> str:
+    """Build a prompt block with global market context if available.
+
+    Returns an empty string when no context exists (e.g. US stock analysis),
+    so it's safe to always include in prompt templates.
+    """
+    ctx = state.get("global_market_context", "")
+    if not ctx or not ctx.strip():
+        return ""
+    return (
+        "\n\n--- GLOBAL MARKET CONTEXT (auto-collected, for cross-market reference) ---\n"
+        + ctx
+        + "\n--- END GLOBAL MARKET CONTEXT ---\n"
+        "Consider the above global market data when forming your analysis. "
+        "US market movements, macro trends, and global news may impact the A-share stock you are analyzing.\n"
+    )
+
 def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add placeholder for Anthropic compatibility"""
