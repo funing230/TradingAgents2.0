@@ -51,7 +51,7 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
-        run_probe: bool = False,
+        run_probe: bool = True,
     ):
         """Initialize the trading agents graph and components.
 
@@ -60,7 +60,8 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
-            run_probe: If True, probe all models at startup and apply results
+            run_probe: If True (default), probe all models at startup and
+                       schedule roles dynamically based on results
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
@@ -78,15 +79,19 @@ class TradingAgentsGraph:
         # Initialize LLM Pool (multi-model, role-based, mode-aware)
         self.llm_pool = LLMPool(self.config, callbacks=self.callbacks)
 
-        # Optional: probe models and apply availability/capability results
+        # Probe models and schedule roles dynamically
         if run_probe:
             try:
                 probe = LLMProbe(self.config)
                 probe_results = probe.probe_all(verbose=debug)
-                self.llm_pool.apply_probe_results(probe_results)
+                assignments = self.llm_pool.schedule_roles(probe_results)
+                if debug:
+                    print("\n[LLM Schedule]\n" + self.llm_pool.get_schedule_summary())
             except Exception as e:
                 import logging
-                logging.getLogger(__name__).warning("Probe failed, continuing without: %s", e)
+                logging.getLogger(__name__).warning(
+                    "Probe/schedule failed, falling back to first available: %s", e
+                )
 
         # Legacy compatibility: expose deep/quick for components that use them
         self.deep_thinking_llm = self.llm_pool.get_llm("research_manager")

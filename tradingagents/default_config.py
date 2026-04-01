@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
             "api_key_env": "CLAUDE_API_KEY",
             "context_window": 200000,
             "max_tokens": 16384,
+            "cost_tier": "high",
             "modes": {
                 "chat": {},
                 "deepthink": {"reasoning_effort": "high"},
@@ -34,6 +35,7 @@ DEFAULT_CONFIG = {
             "api_key_env": "GPT54_API_KEY",
             "context_window": 128000,
             "max_tokens": 8192,
+            "cost_tier": "medium",
             "modes": {
                 "chat": {},
                 "deepthink": {"reasoning_effort": "high"},
@@ -46,6 +48,7 @@ DEFAULT_CONFIG = {
             "api_key_env": "GEMINI_API_KEY",
             "context_window": 2000000,
             "max_tokens": 32768,
+            "cost_tier": "low",
             "modes": {
                 "chat": {},
                 "deepthink": {"thinking_level": "high"},
@@ -59,6 +62,7 @@ DEFAULT_CONFIG = {
         #     "api_key_env": "DEEPSEEK_API_KEY",
         #     "context_window": 16000,
         #     "max_tokens": 4096,
+        #     "cost_tier": "low",
         #     "modes": {"chat": {}, "deepthink": {"reasoning_effort": "high"}},
         # },
         # "qwen": {
@@ -68,34 +72,48 @@ DEFAULT_CONFIG = {
         #     "api_key_env": "QWEN_API_KEY",
         #     "context_window": 128000,
         #     "max_tokens": 8192,
+        #     "cost_tier": "low",
         #     "modes": {"chat": {}, "deepthink": {"reasoning_effort": "high"}},
         # },
     },
 
     # =========================================================
-    # Role → Model mapping
-    # Each role maps to {"model": <pool_key>, "mode": "chat"|"deepthink"}
-    # Optional "fallback" list for automatic failover
-    # Legacy format (plain string) is still supported as chat mode
+    # Role requirements (declarative)
+    #
+    # Each role declares WHAT it needs, not WHO provides it:
+    #   mode:        "chat" or "deepthink"
+    #   prefer_cost: "low" | "medium" | "high" | "any"
+    #
+    # The scheduler assigns concrete models at startup based on
+    # probe results + these requirements. No hardcoded model names.
+    #
+    # Backward compatible: old format {"model": "xxx", "mode": "..."}
+    # and plain strings ("xxx") are still accepted and bypass scheduling.
     # =========================================================
     "llm_roles": {
-        "market_analyst":       {"model": "gpt54",       "mode": "chat"},
-        "news_analyst":         {"model": "gpt54",       "mode": "chat"},
-        "social_analyst":       {"model": "gpt54",       "mode": "chat"},
-        "fundamentals_analyst": {"model": "gpt54",       "mode": "chat"},
-        "bull_researcher":      {"model": "gpt54",       "mode": "chat"},
-        "bear_researcher":      {"model": "gpt54",       "mode": "chat"},
-        "research_manager":     {"model": "claude-opus",  "mode": "deepthink",
-                                 "fallback": [{"model": "gpt54", "mode": "deepthink"}]},
-        "trader":               {"model": "gpt54",       "mode": "deepthink"},
-        "aggressive_debater":   {"model": "gemini",      "mode": "chat"},
-        "conservative_debater": {"model": "gemini",      "mode": "chat"},
-        "neutral_debater":      {"model": "gemini",      "mode": "chat"},
-        "portfolio_manager":    {"model": "claude-opus",  "mode": "deepthink",
-                                 "fallback": [{"model": "gpt54", "mode": "deepthink"}]},
-        "reflector":            {"model": "claude-opus",  "mode": "deepthink",
-                                 "fallback": [{"model": "gpt54", "mode": "deepthink"}]},
-        "signal_processor":     {"model": "gpt54",       "mode": "chat"},
+        # --- Data collection (high frequency, cost sensitive) ---
+        "market_analyst":       {"mode": "chat",      "prefer_cost": "low"},
+        "news_analyst":         {"mode": "chat",      "prefer_cost": "low"},
+        "social_analyst":       {"mode": "chat",      "prefer_cost": "low"},
+        "fundamentals_analyst": {"mode": "chat",      "prefer_cost": "low"},
+
+        # --- Research (moderate reasoning, moderate cost) ---
+        "bull_researcher":      {"mode": "chat",      "prefer_cost": "medium"},
+        "bear_researcher":      {"mode": "chat",      "prefer_cost": "medium"},
+
+        # --- Decision making (deep reasoning, quality first) ---
+        "research_manager":     {"mode": "deepthink", "prefer_cost": "any"},
+        "trader":               {"mode": "deepthink", "prefer_cost": "any"},
+        "portfolio_manager":    {"mode": "deepthink", "prefer_cost": "any"},
+
+        # --- Risk debate (fast exchange, cost sensitive) ---
+        "aggressive_debater":   {"mode": "chat",      "prefer_cost": "low"},
+        "conservative_debater": {"mode": "chat",      "prefer_cost": "low"},
+        "neutral_debater":      {"mode": "chat",      "prefer_cost": "low"},
+
+        # --- Post-processing ---
+        "reflector":            {"mode": "deepthink", "prefer_cost": "any"},
+        "signal_processor":     {"mode": "chat",      "prefer_cost": "low"},
     },
 
     # =========================================================
