@@ -9,6 +9,7 @@ from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
 
 from .conditional_logic import ConditionalLogic
+from .global_context import create_global_context_collector
 
 
 class GraphSetup:
@@ -133,6 +134,9 @@ class GraphSetup:
         # Create workflow
         workflow = StateGraph(AgentState)
 
+        # Add Global Context Collector node (runs before analysts)
+        workflow.add_node("Global Context", create_global_context_collector())
+
         # Add analyst nodes to the graph
         for analyst_type, node in analyst_nodes.items():
             workflow.add_node(f"{analyst_type.capitalize()} Analyst", node)
@@ -152,9 +156,10 @@ class GraphSetup:
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
-        # Start with the first analyst
+        # Start with Global Context, then first analyst
         first_analyst = selected_analysts[0]
-        workflow.add_edge(START, f"{first_analyst.capitalize()} Analyst")
+        workflow.add_edge(START, "Global Context")
+        workflow.add_edge("Global Context", f"{first_analyst.capitalize()} Analyst")
 
         # Connect analysts in sequence
         for i, analyst_type in enumerate(selected_analysts):
