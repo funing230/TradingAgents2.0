@@ -1,5 +1,9 @@
 from typing import Annotated
+import re
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -195,12 +199,97 @@ VENDOR_LIMITERS = {
     "akshare": akshare_limiter,
 }
 
+# ---------------------------------------------------------------------------
+# Market detection and vendor compatibility
+# ---------------------------------------------------------------------------
+
+# Which markets each vendor supports
+VENDOR_MARKETS = {
+    "tushare":       {"cn"},
+    "akshare":       {"cn"},
+    "yfinance":      {"us", "global"},
+    "alpha_vantage": {"us", "global"},
+}
+
+# Methods that are market-agnostic (no ticker argument, or global scope)
+_MARKET_AGNOSTIC_METHODS = {"get_global_news"}
+
+
+def detect_market(symbol: str) -> str:
+    """Detect which market a ticker symbol belongs to.
+
+    Returns:
+        "cn"      — Chinese A-share (000001.SZ, 600000.SH, 830001.BJ, pure 6-digit)
+        "us"      — US equity (AAPL, MSFT, BRK.B, ^GSPC)
+        "global"  — Index or unknown (compatible with all vendors)
+    """
+    if not symbol:
+        return "global"
+
+    s = symbol.strip().upper()
+
+    # Chinese A-share: 6 digits with exchange suffix
+    if re.match(r"^\d{6}\.(SZ|SH|BJ)$", s):
+        return "cn"
+
+    # Pure 6-digit code → A-share
+    if re.match(r"^\d{6}$", s):
+        return "cn"
+
+    # US index symbols: ^GSPC, ^IXIC, ^DJI
+    if s.startswith("^"):
+        return "us"
+
+    # Pure letters (with optional dot for BRK.B style) → US
+    if re.match(r"^[A-Z]{1,5}(\.[A-Z])?$", s):
+        return "us"
+
+    # ETF-style: SPY, QQQ, etc.
+    if re.match(r"^[A-Z]{2,5}$", s):
+        return "us"
+
+    return "global"
+
+
+def _is_empty_result(result) -> bool:
+    """Check if a vendor returned a 'fake success' (data is effectively empty).
+
+    Catches cases like yfinance returning 'No data found for symbol...'
+    when given an A-share ticker it doesn't recognize.
+    """
+    if result is None:
+        return True
+
+    if isinstance(result, str):
+        lower = result.lower()
+        # Common empty-data messages
+        if any(phrase in lower for phrase in (
+            "no data found",
+            "no records",
+            "no news found",
+            "no insider",
+            "no fundamentals",
+            "no balance sheet",
+            "no cashflow",
+            "no income statement",
+        )):
+            return True
+
+        # CSV with only header, no data rows
+        lines = [l for l in result.strip().split('\n') if l and not l.startswith('#')]
+        if len(lines) <= 1:
+            return True
+
+    return False
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support.
 
     Features:
+      - Market-aware vendor filtering (A-share tickers → CN vendors only, etc.)
       - Per-vendor rate limiting (throttle before each call)
-      - Automatic fallback on rate-limit or transient errors
+      - Empty result detection (prevents 'fake success' from wrong vendor)
+      - Automatic fallback on rate-limit, transient errors, or empty results
       - File-based parquet cache for OHLCV data (get_stock_data)
     """
     category = get_category_for_method(method)
@@ -216,6 +305,23 @@ def route_to_vendor(method: str, *args, **kwargs):
     for vendor in all_available_vendors:
         if vendor not in fallback_vendors:
             fallback_vendors.append(vendor)
+
+    # Market-aware filtering: exclude vendors that can't handle this ticker
+    if method not in _MARKET_AGNOSTIC_METHODS and args:
+        market = detect_market(str(args[0]))
+        if market != "global":
+            compatible = [
+                v for v in fallback_vendors
+                if market in VENDOR_MARKETS.get(v, {"us", "cn", "global"})
+            ]
+            if compatible:
+                if set(compatible) != set(fallback_vendors):
+                    logger.debug(
+                        "Market filter: %s → %s, vendors %s → %s",
+                        args[0], market, fallback_vendors, compatible,
+                    )
+                fallback_vendors = compatible
+            # If no compatible vendor, keep all (better to try than to fail)
 
     errors = []
     for vendor in fallback_vendors:
@@ -238,6 +344,12 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             result = impl_func(*args, **kwargs)
+
+            # Check for empty/fake-success results
+            if _is_empty_result(result):
+                errors.append(f"{vendor}: empty result")
+                logger.debug("Empty result from %s for %s, trying next vendor", vendor, method)
+                continue
 
             # Cache stock data results
             if method == "get_stock_data" and len(args) >= 3 and isinstance(result, str):
