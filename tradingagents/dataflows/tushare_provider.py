@@ -32,13 +32,7 @@ def _get_pro():
                 "Get your token at https://tushare.pro and run: "
                 "export TUSHARE_TOKEN='your-token-here'"
             )
-        api_url = os.getenv(
-            "TUSHARE_API_URL",
-            "http://lianghua.nanyangqiankun.top",
-        )
         _pro = ts.pro_api(token)
-        _pro._DataApi__token = token
-        _pro._DataApi__http_url = api_url
     return _pro
 
 
