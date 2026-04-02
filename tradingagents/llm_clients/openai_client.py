@@ -24,6 +24,10 @@ _PASSTHROUGH_KWARGS = (
     "api_key", "callbacks", "http_client", "http_async_client",
 )
 
+# Default retry/timeout for LLM calls (covers 504, 502, 429, etc.)
+_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_TIMEOUT = 300  # 5 minutes
+
 # Provider base URLs and API key env vars
 _PROVIDER_CONFIG = {
     "xai": ("https://api.x.ai/v1", "XAI_API_KEY"),
@@ -73,6 +77,10 @@ class OpenAIClient(BaseLLMClient):
         for key in _PASSTHROUGH_KWARGS:
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
+
+        # Ensure retry and timeout defaults
+        llm_kwargs.setdefault("max_retries", _DEFAULT_MAX_RETRIES)
+        llm_kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
 
         # Native OpenAI: use Responses API for consistent behavior across
         # all model families. Third-party providers and custom base_url use Chat Completions.
