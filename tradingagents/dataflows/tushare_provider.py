@@ -206,17 +206,10 @@ def get_indicators(
     if df is None or df.empty:
         return f"No data for {symbol} to compute indicator '{indicator}'"
 
-    # Prepare for stockstats
-    df = df.rename(columns={
-        "trade_date": "Date",
-        "open": "Open",
-        "high": "High",
-        "low": "Low",
-        "close": "Close",
-        "vol": "Volume",
-    })
-    df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d")
-    df = df.sort_values("Date")
+    # Prepare for stockstats (requires lowercase column names)
+    df = df.rename(columns={"vol": "volume"})
+    df["date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d")
+    df = df.sort_values("date").reset_index(drop=True)
 
     ss = wrap(df)
     try:
@@ -224,17 +217,31 @@ def get_indicators(
     except Exception as e:
         return f"Indicator '{indicator}' not supported or calculation failed: {e}"
 
+    # Copy computed indicator back to the plain DataFrame to avoid
+    # StockDataFrame's __getitem__ intercepting column access.
+    ind_col = indicator
+    if ind_col not in ss.columns:
+        candidates = [c for c in ss.columns if c.startswith(indicator)]
+        if candidates:
+            ind_col = candidates[0]
+        else:
+            return f"Indicator '{indicator}' computed but column not found in: {list(ss.columns)}"
+
+    df[ind_col] = ss[ind_col].values
+
     # Filter to look-back window
     window_start = end_dt - timedelta(days=look_back_days)
-    mask = (df["Date"] >= window_start) & (df["Date"] <= end_dt)
-    result_df = df.loc[mask].copy()
+    mask = (df["date"] >= window_start) & (df["date"] <= end_dt)
+    result_df = df.loc[mask]
 
     ind_string = ""
     for _, row in result_df.iterrows():
-        date_str = row["Date"].strftime("%Y-%m-%d")
-        val = row.get(indicator, "N/A")
+        date_str = row["date"].strftime("%Y-%m-%d")
+        val = row.get(ind_col, "N/A")
         if pd.isna(val):
             val = "N/A"
+        else:
+            val = f"{val:.4f}" if isinstance(val, float) else str(val)
         ind_string += f"{date_str}: {val}\n"
 
     return (
