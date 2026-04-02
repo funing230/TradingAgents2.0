@@ -198,16 +198,20 @@ class TradingAgentsGraph:
         args = self.propagator.get_graph_args()
 
         if self.debug:
-            # Debug mode with tracing
-            trace = []
+            # Debug mode with tracing — stream_mode="updates" returns
+            # {node_name: delta} per step, so we accumulate into final_state.
+            final_state = dict(init_agent_state)
             for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
-                    chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
-
-            final_state = trace[-1]
+                for node_name, delta in chunk.items():
+                    if node_name == "__end__":
+                        continue
+                    # Merge delta into accumulated state
+                    for key, val in delta.items():
+                        final_state[key] = val
+                    # Print messages only if this node produced new ones
+                    new_msgs = delta.get("messages", [])
+                    if new_msgs:
+                        new_msgs[-1].pretty_print()
         else:
             # Standard mode without tracing
             final_state = self.graph.invoke(init_agent_state, **args)

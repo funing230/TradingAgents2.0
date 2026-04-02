@@ -65,6 +65,6 @@ class Propagator:
         if callbacks:
             config["callbacks"] = callbacks
         return {
-            "stream_mode": "values",
+            "stream_mode": "updates",
             "config": config,
         }
