@@ -1,6 +1,13 @@
 # TradingAgents/graph/conditional_logic.py
 
+import logging
+from langchain_core.messages import ToolMessage
 from tradingagents.agents.utils.agent_states import AgentState
+
+logger = logging.getLogger(__name__)
+
+# Maximum number of tool-call rounds per analyst before forcing report generation.
+_MAX_TOOL_ROUNDS = 10
 
 
 class ConditionalLogic:
@@ -11,11 +18,19 @@ class ConditionalLogic:
         self.max_debate_rounds = max_debate_rounds
         self.max_risk_discuss_rounds = max_risk_discuss_rounds
 
+    @staticmethod
+    def _tool_rounds(messages) -> int:
+        """Count how many tool-call round-trips have occurred in current messages."""
+        return sum(1 for m in messages if isinstance(m, ToolMessage))
+
     def should_continue_market(self, state: AgentState):
         """Determine if market analysis should continue."""
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._tool_rounds(messages) >= _MAX_TOOL_ROUNDS:
+                logger.warning("Market analyst hit tool-call limit (%d), forcing report.", _MAX_TOOL_ROUNDS)
+                return "Msg Clear Market"
             return "tools_market"
         return "Msg Clear Market"
 
@@ -24,6 +39,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._tool_rounds(messages) >= _MAX_TOOL_ROUNDS:
+                logger.warning("Social analyst hit tool-call limit (%d), forcing report.", _MAX_TOOL_ROUNDS)
+                return "Msg Clear Social"
             return "tools_social"
         return "Msg Clear Social"
 
@@ -32,6 +50,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._tool_rounds(messages) >= _MAX_TOOL_ROUNDS:
+                logger.warning("News analyst hit tool-call limit (%d), forcing report.", _MAX_TOOL_ROUNDS)
+                return "Msg Clear News"
             return "tools_news"
         return "Msg Clear News"
 
@@ -40,6 +61,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._tool_rounds(messages) >= _MAX_TOOL_ROUNDS:
+                logger.warning("Fundamentals analyst hit tool-call limit (%d), forcing report.", _MAX_TOOL_ROUNDS)
+                return "Msg Clear Fundamentals"
             return "tools_fundamentals"
         return "Msg Clear Fundamentals"
 
