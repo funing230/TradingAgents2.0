@@ -169,35 +169,20 @@ class TradingAgentsGraph:
         """Create tool nodes for different data sources using abstract methods."""
         return {
             "market": ToolNode(
-                [
-                    # Core stock data tools
-                    get_stock_data,
-                    # Technical indicators
-                    get_indicators,
-                ]
+                [get_stock_data, get_indicators],
+                handle_tool_errors=True,
             ),
             "social": ToolNode(
-                [
-                    # News tools for social media analysis
-                    get_news,
-                ]
+                [get_news],
+                handle_tool_errors=True,
             ),
             "news": ToolNode(
-                [
-                    # News and insider information
-                    get_news,
-                    get_global_news,
-                    get_insider_transactions,
-                ]
+                [get_news, get_global_news, get_insider_transactions],
+                handle_tool_errors=True,
             ),
             "fundamentals": ToolNode(
-                [
-                    # Fundamental analysis tools
-                    get_fundamentals,
-                    get_balance_sheet,
-                    get_cashflow,
-                    get_income_statement,
-                ]
+                [get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement],
+                handle_tool_errors=True,
             ),
         }
 

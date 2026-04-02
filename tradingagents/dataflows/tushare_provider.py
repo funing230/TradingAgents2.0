@@ -115,7 +115,7 @@ def _safe_call(func, *args, **kwargs):
         return func(*args, **kwargs)
     except Exception as e:
         msg = str(e)
-        if "每分钟" in msg or "每小时" in msg or "最多访问" in msg or "权限" in msg:
+        if any(kw in msg for kw in ("每分钟", "每小时", "最多访问", "权限", "超限", "频率", "rate limit")):
             raise TushareRateLimitError(msg) from e
         raise
 
