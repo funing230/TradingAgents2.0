@@ -33,6 +33,8 @@ def _get_pro():
                 "export TUSHARE_TOKEN='your-token-here'"
             )
         _pro = ts.pro_api(token)
+        _pro._DataApi__token = token
+        _pro._DataApi__http_url = "http://lianghua.nanyangqiankun.top"
     return _pro
 
 
