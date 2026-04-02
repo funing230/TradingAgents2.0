@@ -15,6 +15,19 @@ DEFAULT_CONFIG = {
     # Add new models without changing any code
     # =========================================================
     "llm_pool": {
+        "gemini": {
+            "provider": "openai",
+            "model": "[L]gemini-3-pro-preview",
+            "base_url": "https://new.lemonapi.site/v1",
+            "api_key_env": "GEMINI_API_KEY",
+            "context_window": 2000000,
+            "max_tokens": 32768,
+            "cost_tier": "low",
+            "modes": {
+                "chat": {},
+                "deepthink": {"thinking_level": "high"},
+            },
+        },
         "claude-opus": {
             "provider": "openai",
             "model": "claude-opus-4-6-thinking",
@@ -41,30 +54,17 @@ DEFAULT_CONFIG = {
                 "deepthink": {"reasoning_effort": "high"},
             },
         },
-        "gemini": {
+        # === 扩展模型 ===
+        "deepseek": {
             "provider": "openai",
-            "model": "[L]gemini-3-pro-preview",
-            "base_url": "https://new.lemonapi.site/v1",
-            "api_key_env": "GEMINI_API_KEY",
-            "context_window": 2000000,
-            "max_tokens": 32768,
+            "model": "deepseek-chat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key_env": "DEEPSEEK_API_KEY",
+            "context_window": 64000,
+            "max_tokens": 8192,
             "cost_tier": "low",
-            "modes": {
-                "chat": {},
-                "deepthink": {"thinking_level": "high"},
-            },
+            "modes": {"chat": {}, "deepthink": {"reasoning_effort": "high"}},
         },
-        # === 预留扩展位 ===
-        # "deepseek": {
-        #     "provider": "openai",
-        #     "model": "deepseek-chat",
-        #     "base_url": "https://api.deepseek.com/v1",
-        #     "api_key_env": "DEEPSEEK_API_KEY",
-        #     "context_window": 16000,
-        #     "max_tokens": 4096,
-        #     "cost_tier": "low",
-        #     "modes": {"chat": {}, "deepthink": {"reasoning_effort": "high"}},
-        # },
         # "qwen": {
         #     "provider": "openai",
         #     "model": "qwen-max",
