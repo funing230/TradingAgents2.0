@@ -25,10 +25,13 @@ def _get_pro():
     if _pro is None:
         import tushare as ts
 
-        token = os.getenv(
-            "TUSHARE_TOKEN",
-            "0ed90f669a832177e4e2e11b44a8781ba18c53978b68b6cc57fbe54241b9",
-        )
+        token = os.getenv("TUSHARE_TOKEN", "")
+        if not token:
+            raise RuntimeError(
+                "TUSHARE_TOKEN environment variable is not set. "
+                "Get your token at https://tushare.pro and run: "
+                "export TUSHARE_TOKEN='your-token-here'"
+            )
         api_url = os.getenv(
             "TUSHARE_API_URL",
             "http://lianghua.nanyangqiankun.top",
