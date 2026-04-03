@@ -436,27 +436,66 @@ class LLMPool:
         return ResilientLLM(primary, fallbacks)
 
     def _fallback_first_available(self, role_cfg: Dict) -> Any:
-        """Emergency fallback: pick first available model when scheduler wasn't run."""
+        """Fallback when scheduler wasn't run: pick best model using cost_tier
+        from pool config (no probe needed).
+
+        Instead of blindly picking the first model in the dict, we rank
+        candidates by cost preference bonus — the same logic schedule_roles
+        uses, but with a fixed base score so the ranking is purely
+        cost-driven.
+        """
         mode = role_cfg.get("mode", "chat")
+        prefer_cost = role_cfg.get("prefer_cost", "any")
         pool = self.config.get("llm_pool", {})
 
-        for model_key in pool:
+        # Build (model_key, effective_score) pairs
+        candidates: list[tuple[str, float]] = []
+        for model_key, model_cfg in pool.items():
             if model_key in self._disabled_models:
                 continue
             if mode == "deepthink" and model_key in self._no_deepthink:
                 continue
+            cost_tier = model_cfg.get("cost_tier", "medium")
+            score = self._compute_effective_score(50.0, cost_tier, prefer_cost)
+            candidates.append((model_key, score))
+
+        # Sort by score descending (best match first)
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # Try candidates in ranked order; build primary + fallbacks
+        primary = None
+        fallbacks = []
+        for model_key, _score in candidates:
             try:
-                return self.get_llm_by_key(model_key, mode=mode)
+                llm = self.get_llm_by_key(model_key, mode=mode)
+                if primary is None:
+                    primary = llm
+                else:
+                    fallbacks.append(llm)
             except Exception:
                 continue
 
-        # Last resort: try any model in chat mode
-        for model_key in pool:
-            if model_key not in self._disabled_models:
-                try:
-                    return self.get_llm_by_key(model_key, mode="chat")
-                except Exception:
-                    continue
+        if primary is not None:
+            if fallbacks:
+                logger.info(
+                    "Fallback assignment: mode=%s prefer_cost=%s → %s "
+                    "(+%d fallbacks)",
+                    mode, prefer_cost, candidates[0][0], len(fallbacks),
+                )
+                return ResilientLLM(primary, fallbacks)
+            logger.info(
+                "Fallback assignment: mode=%s prefer_cost=%s → %s",
+                mode, prefer_cost, candidates[0][0],
+            )
+            return primary
+
+        # Deepthink failed → downgrade to chat and retry
+        if mode == "deepthink":
+            logger.warning(
+                "No model available for deepthink, downgrading to chat",
+            )
+            role_cfg_chat = dict(role_cfg, mode="chat")
+            return self._fallback_first_available(role_cfg_chat)
 
         raise RuntimeError("No available model in pool")
 

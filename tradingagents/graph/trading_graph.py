@@ -61,7 +61,9 @@ class TradingAgentsGraph:
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
             run_probe: If True (default), probe all models at startup and
-                       schedule roles dynamically based on results
+                       schedule roles dynamically based on results.
+                       Even when False, cost-aware fallback ensures correct
+                       model-to-role matching (just without live probing).
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
@@ -79,19 +81,9 @@ class TradingAgentsGraph:
         # Initialize LLM Pool (multi-model, role-based, mode-aware)
         self.llm_pool = LLMPool(self.config, callbacks=self.callbacks)
 
-        # Probe models and schedule roles dynamically
-        if run_probe:
-            try:
-                probe = LLMProbe(self.config)
-                probe_results = probe.probe_all(verbose=debug)
-                assignments = self.llm_pool.schedule_roles(probe_results)
-                if debug:
-                    print("\n[LLM Schedule]\n" + self.llm_pool.get_schedule_summary())
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Probe/schedule failed, falling back to first available: %s", e
-                )
+        # Probe models and schedule roles dynamically.
+        # Always attempt probe+schedule; fall back gracefully on failure.
+        self._probe_and_schedule(run_probe, debug)
 
         # Legacy compatibility: expose deep/quick for components that use them
         self.deep_thinking_llm = self.llm_pool.get_llm("research_manager")
@@ -290,3 +282,90 @@ class TradingAgentsGraph:
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal)
+
+    # ------------------------------------------------------------------
+    # Probe & schedule helpers
+    # ------------------------------------------------------------------
+
+    def _probe_and_schedule(self, run_probe: bool, debug: bool) -> None:
+        """Probe models and schedule roles.
+
+        When *run_probe* is True (default), every model in the pool is
+        tested for connectivity and capabilities, then roles are assigned
+        based on probe scores + cost preferences.
+
+        When *run_probe* is False the probe is skipped, but we still call
+        ``schedule_roles`` with **synthetic probe results** derived from
+        the pool config so that cost-aware scheduling still happens.
+        This avoids the old bug where skipping the probe caused every
+        role to silently fall back to the first model in the dict.
+        """
+        import logging
+        _log = logging.getLogger(__name__)
+
+        if run_probe:
+            try:
+                probe = LLMProbe(self.config)
+                probe_results = probe.probe_all(verbose=debug)
+                assignments = self.llm_pool.schedule_roles(probe_results)
+                if debug:
+                    print("\n[LLM Schedule]\n"
+                          + self.llm_pool.get_schedule_summary())
+                return
+            except Exception as e:
+                _log.warning(
+                    "Probe failed (%s), falling back to synthetic schedule", e,
+                )
+                # Fall through to synthetic scheduling below
+
+        # --- Synthetic scheduling (no live probe) ---
+        self._synthetic_schedule(debug)
+
+    def _synthetic_schedule(self, debug: bool) -> None:
+        """Build synthetic ProbeResults from pool config and schedule roles.
+
+        Every model is assumed available with chat + deepthink support.
+        Higher cost_tier models get a quality bonus so that ``prefer_cost:
+        any`` roles (trader, research_manager, etc.) are assigned to the
+        most capable model rather than winning by dict-order tie-break.
+        """
+        import logging
+        from tradingagents.llm_clients.probe import ProbeResult
+
+        _log = logging.getLogger(__name__)
+        _log.info("Running synthetic schedule (no live probe)")
+
+        # Quality bonus: higher-cost models are assumed more capable
+        _QUALITY_BONUS = {"high": 6.0, "medium": 3.0, "low": 0.0}
+
+        pool = self.config.get("llm_pool", {})
+        synthetic: Dict[str, ProbeResult] = {}
+
+        for model_key, model_cfg in pool.items():
+            cost_tier = model_cfg.get("cost_tier", "medium")
+            pr = ProbeResult(
+                model_key=model_key,
+                model_name=model_cfg.get("model", ""),
+                base_url=model_cfg.get("base_url", ""),
+                context_window=model_cfg.get("context_window", 128000),
+                available=True,
+                chat_ok=True,
+                chat_correct=True,
+                deepthink_ok=True,
+                deepthink_correct=True,
+                deepthink_quality="structured",
+                capabilities=["chat", "deepthink"],
+                cost_tier=cost_tier,
+                # Synthetic latency: assume 2s for all
+                latency_chat_ms=2000.0,
+            )
+            pr.compute_score()
+            # Add quality bonus after compute_score so it doesn't
+            # get capped by the 100-point ceiling inside compute_score
+            pr.score = min(100.0, pr.score + _QUALITY_BONUS.get(cost_tier, 0.0))
+            synthetic[model_key] = pr
+
+        assignments = self.llm_pool.schedule_roles(synthetic)
+        if debug:
+            print("\n[LLM Schedule (synthetic)]\n"
+                  + self.llm_pool.get_schedule_summary())
