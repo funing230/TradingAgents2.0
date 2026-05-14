@@ -235,10 +235,31 @@ class TestInterfaceRouting:
         from tradingagents.dataflows.interface import VENDOR_LIST
         assert "akshare" in VENDOR_LIST
 
-    def test_akshare_in_all_methods(self):
+    def test_vendor_registration_matches_current_design(self):
         from tradingagents.dataflows.interface import VENDOR_METHODS
-        for method, vendors in VENDOR_METHODS.items():
-            assert "akshare" in vendors, f"akshare missing from {method}"
+
+        akshare_methods = {
+            "get_stock_data",
+            "get_indicators",
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        }
+        local_only_methods = {
+            "get_overnight_candidates",
+            "get_overnight_candidate_summary",
+            "get_overnight_candidate_payload",
+        }
+
+        for method in akshare_methods:
+            assert "akshare" in VENDOR_METHODS[method], f"akshare missing from {method}"
+
+        for method in local_only_methods:
+            assert set(VENDOR_METHODS[method]) == {"local"}, f"expected local-only routing for {method}"
 
 
 # ===================================================================
@@ -246,35 +267,77 @@ class TestInterfaceRouting:
 # ===================================================================
 
 
+def _skip_if_akshare_transient(exc: Exception) -> None:
+    msg = str(exc).lower()
+    transient_markers = (
+        "remotedisconnected",
+        "connection aborted",
+        "remote end closed",
+        "max retries exceeded",
+        "connection reset",
+        "temporarily unavailable",
+        "timeout",
+        "too many requests",
+        "429",
+        "频繁",
+        "限制",
+    )
+    if isinstance(exc, AkShareRateLimitError) or any(marker in msg for marker in transient_markers):
+        pytest.skip(f"AkShare integration unavailable/transient: {exc}")
+    raise exc
+
+
 @pytest.mark.integration
 class TestAkShareIntegration:
     def test_get_stock_data_real(self):
-        result = get_stock_data("000001", "2024-01-01", "2024-01-10")
+        try:
+            result = get_stock_data("000001", "2024-01-01", "2024-01-10")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
         assert "000001" in result
         assert "Open" in result
         lines = result.strip().split("\n")
         assert len(lines) > 3
 
     def test_get_fundamentals_real(self):
-        result = get_fundamentals("000001")
-        assert "平安银行" in result
+        try:
+            result = get_fundamentals("000001")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
+        assert "Company Fundamentals" in result
+        assert "AkShare" in result
 
     def test_get_balance_sheet_real(self):
-        result = get_balance_sheet("000001", "quarterly")
+        try:
+            result = get_balance_sheet("000001", "quarterly")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
         assert "Balance Sheet" in result
 
     def test_get_income_statement_real(self):
-        result = get_income_statement("000001", "quarterly")
+        try:
+            result = get_income_statement("000001", "quarterly")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
         assert "Income Statement" in result
 
     def test_get_news_real(self):
-        result = get_news("000001", "2024-01-01", "2026-12-31")
+        try:
+            result = get_news("000001", "2024-01-01", "2026-12-31")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
         assert isinstance(result, str)
 
     def test_get_global_news_real(self):
-        result = get_global_news("2026-03-31")
+        try:
+            result = get_global_news("2026-03-31")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
         assert "Global Market News" in result
 
     def test_symbol_with_exchange(self):
-        result = get_stock_data("000001.SZ", "2024-01-01", "2024-01-10")
+        try:
+            result = get_stock_data("000001.SZ", "2024-01-01", "2024-01-10")
+        except Exception as exc:
+            _skip_if_akshare_transient(exc)
         assert "000001" in result

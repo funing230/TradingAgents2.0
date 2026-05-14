@@ -2,6 +2,7 @@ from typing import Annotated
 import re
 import logging
 import pandas as pd
+from yfinance.exceptions import YFRateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,11 @@ from .akshare_provider import (
     get_insider_transactions as get_akshare_insider_transactions,
     AkShareRateLimitError,
 )
+from .overnight_pipeline_provider import (
+    get_trade_date_candidates as get_overnight_candidates_local,
+    summarize_trade_date_candidates as get_overnight_candidate_summary_local,
+    build_candidate_prompt_payload as get_overnight_candidate_payload_local,
+)
 
 from .resilience import (
     RateLimitError,
@@ -97,6 +103,14 @@ TOOLS_CATEGORIES = {
             "get_global_news",
             "get_insider_transactions",
         ]
+    },
+    "overnight_data": {
+        "description": "Overnight strategy candidates and summaries",
+        "tools": [
+            "get_overnight_candidates",
+            "get_overnight_candidate_summary",
+            "get_overnight_candidate_payload",
+        ]
     }
 }
 
@@ -105,6 +119,7 @@ VENDOR_LIST = [
     "alpha_vantage",
     "tushare",
     "akshare",
+    "local",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -167,6 +182,16 @@ VENDOR_METHODS = {
         "tushare": get_tushare_insider_transactions,
         "akshare": get_akshare_insider_transactions,
     },
+    # overnight_data
+    "get_overnight_candidates": {
+        "local": get_overnight_candidates_local,
+    },
+    "get_overnight_candidate_summary": {
+        "local": get_overnight_candidate_summary_local,
+    },
+    "get_overnight_candidate_payload": {
+        "local": get_overnight_candidate_payload_local,
+    },
 }
 
 def get_category_for_method(method: str) -> str:
@@ -197,6 +222,12 @@ VENDOR_LIMITERS = {
     "alpha_vantage": alpha_vantage_limiter,
     "tushare": tushare_limiter,
     "akshare": akshare_limiter,
+}
+
+LOCAL_ONLY_METHODS = {
+    "get_overnight_candidates",
+    "get_overnight_candidate_summary",
+    "get_overnight_candidate_payload",
 }
 
 # ---------------------------------------------------------------------------
@@ -272,6 +303,8 @@ def _is_empty_result(result) -> bool:
             "no balance sheet",
             "no cashflow",
             "no income statement",
+            "error retrieving",
+            "error getting",
         )):
             return True
 
@@ -291,7 +324,16 @@ def route_to_vendor(method: str, *args, **kwargs):
       - Empty result detection (prevents 'fake success' from wrong vendor)
       - Automatic fallback on rate-limit, transient errors, or empty results
       - File-based parquet cache for OHLCV data (get_stock_data)
+      - Local overnight-data routing for graph-ready candidate access
     """
+    if method in LOCAL_ONLY_METHODS:
+        if method not in VENDOR_METHODS:
+            raise ValueError(f"Method '{method}' not supported")
+        impl = VENDOR_METHODS[method].get("local")
+        if impl is None:
+            raise RuntimeError(f"Local implementation missing for '{method}'")
+        return impl(*args, **kwargs)
+
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
@@ -371,7 +413,7 @@ def route_to_vendor(method: str, *args, **kwargs):
 
             return result
         except (AlphaVantageRateLimitError, TushareRateLimitError,
-                AkShareRateLimitError, RateLimitError):
+                AkShareRateLimitError, RateLimitError, YFRateLimitError):
             errors.append(f"{vendor}: rate limited")
             continue  # Rate limits trigger fallback
         except Exception as e:

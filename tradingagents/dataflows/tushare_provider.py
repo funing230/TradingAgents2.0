@@ -8,6 +8,7 @@ so it plugs directly into the vendor routing in interface.py.
 
 import os
 import re
+from pathlib import Path
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Annotated, Optional
@@ -19,22 +20,60 @@ from typing import Annotated, Optional
 _pro = None
 
 
+def _load_env_file() -> None:
+    """Load a project-local .env file when python-dotenv is available.
+
+    OpenClaw tool executions do not automatically inherit per-project .env
+    values, while this project stores data-provider tokens there.  Keeping this
+    small local loader makes scripts work from the repo without requiring users
+    to export TUSHARE_TOKEN in every shell.
+    """
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.exists():
+        return
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(env_path, override=False)
+        return
+    except Exception:
+        pass
+
+    # Minimal fallback for environments without python-dotenv.
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _get_pro():
     """Lazy-init Tushare Pro API instance."""
     global _pro
     if _pro is None:
         import tushare as ts
 
-        token = os.getenv("TUSHARE_TOKEN", "")
+        _load_env_file()
+        token = os.getenv("TUSHARE_TOKEN", "").strip()
         if not token:
             raise RuntimeError(
                 "TUSHARE_TOKEN environment variable is not set. "
-                "Get your token at https://tushare.pro and run: "
+                "Set it in the project .env file or run: "
                 "export TUSHARE_TOKEN='your-token-here'"
             )
+        api_url = os.getenv("TUSHARE_API_URL", "").strip()
         _pro = ts.pro_api(token)
         _pro._DataApi__token = token
-        _pro._DataApi__http_url = "http://lianghua.nanyangqiankun.top"
+        # The official tushare SDK defaults to http://api.waditu.com/dataapi.
+        # Only override when explicitly requested; api.tushare.pro is the raw
+        # HTTP endpoint and does not behave like the SDK DataApi endpoint.
+        if api_url:
+            _pro._DataApi__http_url = api_url
     return _pro
 
 
@@ -105,13 +144,26 @@ class TushareRateLimitError(Exception):
     pass
 
 
+class TusharePermissionError(TushareRateLimitError):
+    """Raised when Tushare denies access due to insufficient permissions.
+
+    Subclassing TushareRateLimitError preserves existing fallback behavior in
+    interface routing while allowing tests/callers to distinguish permission
+    failures from transient throttling.
+    """
+    pass
+
+
 def _safe_call(func, *args, **kwargs):
-    """Wrap a Tushare call; convert rate-limit messages to TushareRateLimitError."""
+    """Wrap a Tushare call and normalize common external API failures."""
     try:
         return func(*args, **kwargs)
     except Exception as e:
         msg = str(e)
-        if any(kw in msg for kw in ("每分钟", "每小时", "最多访问", "权限", "超限", "频率", "rate limit")):
+        lower_msg = msg.lower()
+        if any(kw in msg for kw in ("权限", "访问权限", "permission")):
+            raise TusharePermissionError(msg) from e
+        if any(kw in msg for kw in ("每分钟", "每小时", "最多访问", "超限", "频率")) or "rate limit" in lower_msg:
             raise TushareRateLimitError(msg) from e
         raise
 

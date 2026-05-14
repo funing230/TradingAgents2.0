@@ -19,6 +19,7 @@ from tradingagents.dataflows.tushare_provider import (
     _parse_date,
     _safe_call,
     TushareRateLimitError,
+    TusharePermissionError,
     get_stock_data,
     get_indicators,
     get_fundamentals,
@@ -108,7 +109,7 @@ class TestSafeCall:
         def raise_perm():
             raise Exception("权限不足，请升级")
 
-        with pytest.raises(TushareRateLimitError):
+        with pytest.raises(TusharePermissionError):
             _safe_call(raise_perm)
 
     def test_other_error_passthrough(self):
@@ -323,6 +324,23 @@ class TestNewsMocked:
 # ===================================================================
 
 
+def _skip_if_tushare_external_constraint(exc: Exception) -> None:
+    msg = str(exc).lower()
+    if isinstance(exc, (TushareRateLimitError, TusharePermissionError)):
+        pytest.skip(f"Tushare integration unavailable/limited: {exc}")
+    transient_markers = (
+        "connection",
+        "timeout",
+        "remote",
+        "reset",
+        "refused",
+        "max retries exceeded",
+    )
+    if any(marker in msg for marker in transient_markers):
+        pytest.skip(f"Tushare integration transient failure: {exc}")
+    raise exc
+
+
 @pytest.mark.integration
 class TestTushareIntegration:
     """Integration tests that hit the real Tushare API.
@@ -331,7 +349,10 @@ class TestTushareIntegration:
     """
 
     def test_get_stock_data_real(self):
-        result = get_stock_data("000001.SZ", "2024-01-01", "2024-01-10")
+        try:
+            result = get_stock_data("000001.SZ", "2024-01-01", "2024-01-10")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         assert "000001.SZ" in result
         assert "Open" in result
         assert "Close" in result
@@ -339,30 +360,48 @@ class TestTushareIntegration:
         assert len(lines) > 3  # header + at least some data rows
 
     def test_get_fundamentals_real(self):
-        result = get_fundamentals("000001.SZ", "2024-01-10")
+        try:
+            result = get_fundamentals("000001.SZ", "2024-01-10")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         assert "平安银行" in result
         assert "EPS" in result
 
     def test_get_balance_sheet_real(self):
-        result = get_balance_sheet("000001.SZ", "quarterly", "2024-01-10")
+        try:
+            result = get_balance_sheet("000001.SZ", "quarterly", "2024-01-10")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         assert "Balance Sheet" in result
 
     def test_get_cashflow_real(self):
-        result = get_cashflow("000001.SZ", "quarterly", "2024-01-10")
+        try:
+            result = get_cashflow("000001.SZ", "quarterly", "2024-01-10")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         assert "Cash Flow" in result
 
     def test_get_income_statement_real(self):
-        result = get_income_statement("000001.SZ", "quarterly", "2024-01-10")
+        try:
+            result = get_income_statement("000001.SZ", "quarterly", "2024-01-10")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         assert "Income Statement" in result
 
     def test_get_insider_transactions_real(self):
-        result = get_insider_transactions("000001.SZ")
+        try:
+            result = get_insider_transactions("000001.SZ")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         # May or may not have data, just ensure no crash
         assert isinstance(result, str)
 
     def test_symbol_conversion_in_call(self):
         """Test that pure digit symbols work end-to-end."""
-        result = get_stock_data("000001", "2024-01-01", "2024-01-10")
+        try:
+            result = get_stock_data("000001", "2024-01-01", "2024-01-10")
+        except Exception as exc:
+            _skip_if_tushare_external_constraint(exc)
         assert "000001.SZ" in result
 
     def test_invalid_symbol_raises(self):
@@ -376,16 +415,37 @@ class TestTushareIntegration:
 
 
 class TestInterfaceRouting:
-    """Test that tushare is properly registered in the vendor routing."""
+    """Test vendor routing registrations stay aligned with current interface design."""
 
     def test_tushare_in_vendor_list(self):
         from tradingagents.dataflows.interface import VENDOR_LIST
         assert "tushare" in VENDOR_LIST
 
-    def test_tushare_in_all_methods(self):
+    def test_vendor_registration_matches_current_design(self):
         from tradingagents.dataflows.interface import VENDOR_METHODS
-        for method, vendors in VENDOR_METHODS.items():
-            assert "tushare" in vendors, f"tushare missing from {method}"
+
+        tushare_methods = {
+            "get_stock_data",
+            "get_indicators",
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        }
+        local_only_methods = {
+            "get_overnight_candidates",
+            "get_overnight_candidate_summary",
+            "get_overnight_candidate_payload",
+        }
+
+        for method in tushare_methods:
+            assert "tushare" in VENDOR_METHODS[method], f"tushare missing from {method}"
+
+        for method in local_only_methods:
+            assert set(VENDOR_METHODS[method]) == {"local"}, f"expected local-only routing for {method}"
 
     def test_route_to_tushare(self):
         """Test routing with tushare as configured vendor."""

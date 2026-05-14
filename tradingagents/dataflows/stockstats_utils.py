@@ -12,7 +12,7 @@ from .config import get_config
 logger = logging.getLogger(__name__)
 
 
-def yf_retry(func, max_retries=3, base_delay=2.0):
+def yf_retry(func, max_retries=1, base_delay=1.0):
     """Execute a yfinance call with exponential backoff on rate limits.
 
     yfinance raises YFRateLimitError on HTTP 429 responses but does not
