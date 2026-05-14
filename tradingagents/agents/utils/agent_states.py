@@ -50,6 +50,7 @@ class RiskDebateState(TypedDict):
 class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     trade_date: Annotated[str, "What date we are trading at"]
+    strategy_mode: Annotated[str, "Graph execution mode: single_stock or overnight"]
 
     sender: Annotated[str, "Agent that sent this message"]
 
@@ -77,3 +78,19 @@ class AgentState(MessagesState):
 
     # Global market context (US indices, macro news) for cross-market analysis
     global_market_context: Annotated[str, "Global market context (US indices, macro sentiment) for A-share analysis"]
+
+    # Overnight strategy context
+    overnight_context: Annotated[str, "Overnight market and strategy context summary"]
+    candidate_universe_summary: Annotated[str, "Summary of the overnight candidate universe for the trade date"]
+    candidate_snapshot: Annotated[str, "Structured snapshot of overnight candidates, scores, and risk flags"]
+    baseline_reference_picks: Annotated[str, "Reference picks from the baseline overnight strategy"]
+    strict_risk_reference_picks: Annotated[str, "Reference picks from the strict_risk overnight strategy"]
+    screened_candidates: Annotated[str, "Candidates remaining after overnight screening and filtering"]
+    selected_candidates: Annotated[str, "Final candidate selections proposed by the agent graph"]
+    rejected_candidates: Annotated[str, "Rejected overnight candidates and their reasons"]
+    selection_constraints: Annotated[str, "Constraints used for nightly selection such as top_n, filter variant, and cash allowance"]
+    selection_rationale: Annotated[str, "Why the final overnight candidates were selected"]
+    override_reasons: Annotated[str, "Reasons the agent graph overrode baseline or strict_risk picks"]
+    rejected_reason_map: Annotated[str, "Per-symbol rejection reasons for audit and diagnostics"]
+    portfolio_construction_plan: Annotated[str, "Structured overnight portfolio construction plan before final review"]
+    final_portfolio: Annotated[str, "Final overnight portfolio with picks, weights, and execution notes"]
