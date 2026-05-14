@@ -217,3 +217,10 @@ __marimo__/
 
 # Cache
 **/data_cache/
+
+# TradingAgents generated artifacts
+/data/
+/eval_results/
+/scripts/*.tmp
+/scripts/__pycache__/
+*.pyc
