@@ -40,3 +40,8 @@ include = ["tradingagents*", "cli*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that hit real external services or live data providers",
+]
