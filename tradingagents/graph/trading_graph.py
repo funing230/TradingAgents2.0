@@ -21,6 +21,7 @@ from tradingagents.agents.utils.agent_states import (
     RiskDebateState,
 )
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.interface import route_to_vendor
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -40,6 +41,23 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
+
+
+def get_overnight_candidates(trade_date: str, top_k: int = 20):
+    """Graph tool wrapper for overnight candidate retrieval."""
+    return route_to_vendor("get_overnight_candidates", trade_date, top_k)
+
+
+
+def get_overnight_candidate_summary(trade_date: str, top_k: int = 20):
+    """Graph tool wrapper for overnight candidate summaries."""
+    return route_to_vendor("get_overnight_candidate_summary", trade_date, top_k)
+
+
+
+def get_overnight_candidate_payload(trade_date: str, top_k: int = 20):
+    """Graph tool wrapper for overnight candidate payload text."""
+    return route_to_vendor("get_overnight_candidate_payload", trade_date, top_k)
 
 
 class TradingAgentsGraph:
@@ -80,14 +98,25 @@ class TradingAgentsGraph:
 
         # Initialize LLM Pool (multi-model, role-based, mode-aware)
         self.llm_pool = LLMPool(self.config, callbacks=self.callbacks)
+        self.bootstrap_error: Optional[str] = None
 
         # Probe models and schedule roles dynamically.
         # Always attempt probe+schedule; fall back gracefully on failure.
         self._probe_and_schedule(run_probe, debug)
 
-        # Legacy compatibility: expose deep/quick for components that use them
-        self.deep_thinking_llm = self.llm_pool.get_llm("research_manager")
-        self.quick_thinking_llm = self.llm_pool.get_llm("market_analyst")
+        self.deep_thinking_llm = None
+        self.quick_thinking_llm = None
+        self.graph_setup = None
+        self.graph = None
+
+        try:
+            # Legacy compatibility: expose deep/quick for components that use them
+            self.deep_thinking_llm = self.llm_pool.get_llm("research_manager")
+            self.quick_thinking_llm = self.llm_pool.get_llm("market_analyst")
+        except Exception as exc:
+            self.bootstrap_error = f"LLM bootstrap unavailable: {exc}"
+            if self.debug:
+                print(f"[TradingAgentsGraph] {self.bootstrap_error}")
         
         # Initialize memories
         self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
@@ -104,18 +133,19 @@ class TradingAgentsGraph:
             max_debate_rounds=self.config["max_debate_rounds"],
             max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
         )
-        self.graph_setup = GraphSetup(
-            llm_pool=self.llm_pool,
-            quick_thinking_llm=self.quick_thinking_llm,
-            deep_thinking_llm=self.deep_thinking_llm,
-            tool_nodes=self.tool_nodes,
-            bull_memory=self.bull_memory,
-            bear_memory=self.bear_memory,
-            trader_memory=self.trader_memory,
-            invest_judge_memory=self.invest_judge_memory,
-            portfolio_manager_memory=self.portfolio_manager_memory,
-            conditional_logic=self.conditional_logic,
-        )
+        if self.deep_thinking_llm is not None and self.quick_thinking_llm is not None:
+            self.graph_setup = GraphSetup(
+                llm_pool=self.llm_pool,
+                quick_thinking_llm=self.quick_thinking_llm,
+                deep_thinking_llm=self.deep_thinking_llm,
+                tool_nodes=self.tool_nodes,
+                bull_memory=self.bull_memory,
+                bear_memory=self.bear_memory,
+                trader_memory=self.trader_memory,
+                invest_judge_memory=self.invest_judge_memory,
+                portfolio_manager_memory=self.portfolio_manager_memory,
+                conditional_logic=self.conditional_logic,
+            )
 
         self.propagator = Propagator()
         self.reflector = Reflector(
@@ -132,8 +162,9 @@ class TradingAgentsGraph:
         self.ticker = None
         self.log_states_dict = {}  # date to full state dict
 
-        # Set up the graph
-        self.graph = self.graph_setup.setup_graph(selected_analysts)
+        # Set up the graph when LLM bootstrap succeeded
+        if self.graph_setup is not None:
+            self.graph = self.graph_setup.setup_graph(selected_analysts)
 
     def _get_provider_kwargs(self) -> Dict[str, Any]:
         """Get provider-specific kwargs for LLM client creation."""
@@ -176,10 +207,23 @@ class TradingAgentsGraph:
                 [get_fundamentals, get_balance_sheet, get_cashflow, get_income_statement],
                 handle_tool_errors=True,
             ),
+            "overnight": ToolNode(
+                [
+                    get_overnight_candidates,
+                    get_overnight_candidate_summary,
+                    get_overnight_candidate_payload,
+                ],
+                handle_tool_errors=True,
+            ),
         }
 
     def propagate(self, company_name, trade_date):
         """Run the trading agents graph for a company on a specific date."""
+        if self.graph is None:
+            raise RuntimeError(
+                "Trading graph is unavailable because LLM bootstrap failed. "
+                f"bootstrap_error={self.bootstrap_error}"
+            )
 
         self.ticker = company_name
 
@@ -187,26 +231,7 @@ class TradingAgentsGraph:
         init_agent_state = self.propagator.create_initial_state(
             company_name, trade_date
         )
-        args = self.propagator.get_graph_args()
-
-        if self.debug:
-            # Debug mode with tracing — stream_mode="updates" returns
-            # {node_name: delta} per step, so we accumulate into final_state.
-            final_state = dict(init_agent_state)
-            for chunk in self.graph.stream(init_agent_state, **args):
-                for node_name, delta in chunk.items():
-                    if node_name == "__end__":
-                        continue
-                    # Merge delta into accumulated state
-                    for key, val in delta.items():
-                        final_state[key] = val
-                    # Print messages only if this node produced new ones
-                    new_msgs = delta.get("messages", [])
-                    if new_msgs:
-                        new_msgs[-1].pretty_print()
-        else:
-            # Standard mode without tracing
-            final_state = self.graph.invoke(init_agent_state, **args)
+        final_state = self._run_graph_from_state(init_agent_state)
 
         # Store current state for reflection
         self.curr_state = final_state
@@ -217,16 +242,179 @@ class TradingAgentsGraph:
         # Return decision and processed signal
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
+    def _run_graph_from_state(self, init_agent_state: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the compiled graph from an already prepared initial state."""
+        if self.graph is None:
+            raise RuntimeError(
+                "Trading graph is unavailable because LLM bootstrap failed. "
+                f"bootstrap_error={self.bootstrap_error}"
+            )
+
+        args = self.propagator.get_graph_args()
+        if self.debug:
+            final_state = dict(init_agent_state)
+            for chunk in self.graph.stream(init_agent_state, **args):
+                for node_name, delta in chunk.items():
+                    if node_name == "__end__":
+                        continue
+                    for key, val in delta.items():
+                        final_state[key] = val
+                    new_msgs = delta.get("messages", [])
+                    if new_msgs:
+                        new_msgs[-1].pretty_print()
+            return final_state
+
+        return self.graph.invoke(init_agent_state, **args)
+
+    def propagate_overnight(
+        self,
+        trade_date: str,
+        top_k: Optional[int] = None,
+        top_n: Optional[int] = None,
+    ):
+        """Run overnight analysis.
+
+        If the full graph is available, overnight state is injected into the
+        compiled graph so the normal analyst/research/trader pipeline runs.
+        If LLM bootstrap is unavailable, this method falls back to returning
+        the prepared overnight bootstrap state.
+        """
+        candidate_pool_size = int(top_k or self.config.get("overnight_candidate_pool_size", 20))
+        target_top_n = int(top_n or self.config.get("overnight_top_n", 5))
+        payload = get_overnight_candidate_payload(trade_date, candidate_pool_size)
+        summary = get_overnight_candidate_summary(trade_date, candidate_pool_size)
+        candidates = get_overnight_candidates(trade_date, candidate_pool_size)
+
+        company_label = f"overnight::{trade_date}"
+        self.ticker = company_label
+        constraints_json = json.dumps(
+            {
+                "top_n": target_top_n,
+                "candidate_pool_size": candidate_pool_size,
+                "filter_variant": self.config.get("overnight_filter_variant", "strict_risk"),
+                "weight_variant": self.config.get("overnight_weight_variant", "baseline"),
+                "exit_mode": self.config.get("overnight_exit_mode", "open"),
+                "allow_cash": self.config.get("overnight_allow_cash", True),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        init_agent_state = self.propagator.create_initial_overnight_state(
+            trade_date=trade_date,
+            payload=payload,
+            summary_json=json.dumps(summary, ensure_ascii=False, indent=2),
+            candidates_json=candidates.to_json(orient="records", force_ascii=False),
+            selected_json=candidates.head(target_top_n).to_json(orient="records", force_ascii=False),
+            constraints_json=constraints_json,
+            company_label=company_label,
+        )
+
+        if self.graph is not None:
+            final_state = self._run_graph_from_state(init_agent_state)
+            self.curr_state = final_state
+            self.last_overnight_decision = final_state.get("final_trade_decision", payload)
+            try:
+                self.last_overnight_processed_signal = self.process_signal(self.last_overnight_decision)
+            except Exception:
+                self.last_overnight_processed_signal = self.last_overnight_decision
+            final_state["last_overnight_decision"] = self.last_overnight_decision
+            final_state["last_overnight_processed_signal"] = self.last_overnight_processed_signal
+            final_state["overnight_candidate_payload"] = payload
+            self._log_state(trade_date, final_state)
+            return final_state, payload
+
+        self.curr_state = init_agent_state
+        self.last_overnight_decision = payload
+        self.last_overnight_processed_signal = payload
+        init_agent_state["last_overnight_decision"] = self.last_overnight_decision
+        init_agent_state["last_overnight_processed_signal"] = self.last_overnight_processed_signal
+        init_agent_state["overnight_candidate_payload"] = payload
+        self._log_state(trade_date, init_agent_state)
+        return init_agent_state, payload
+
+    def propagate_overnight_live(
+        self,
+        trade_date: str,
+        payload: str,
+        candidate_summary: Dict[str, Any] | str,
+        candidates_json: str,
+        selected_json: str,
+        constraints: Dict[str, Any] | str,
+        company_label: Optional[str] = None,
+    ):
+        """Run TradingAgents2.0 graph on a live pre-close candidate buffer.
+
+        This path is for the user's desired workflow: build a Top10/Top15/Top20
+        buffer before 14:55, let the agent graph review it, then use the review
+        scores during the final 14:55 fusion step.
+        """
+        label = company_label or f"overnight-live-review::{trade_date}"
+        self.ticker = label
+        summary_json = candidate_summary if isinstance(candidate_summary, str) else json.dumps(candidate_summary, ensure_ascii=False, indent=2)
+        constraints_json = constraints if isinstance(constraints, str) else json.dumps(constraints, ensure_ascii=False, indent=2)
+        init_agent_state = self.propagator.create_initial_overnight_state(
+            trade_date=trade_date,
+            payload=payload,
+            summary_json=summary_json,
+            candidates_json=candidates_json,
+            selected_json=selected_json,
+            constraints_json=constraints_json,
+            company_label=label,
+        )
+        init_agent_state["selection_rationale"] = "Live pre-close review buffer: TradingAgents2.0 reviews the Top-K candidates before 14:55 final fusion."
+        init_agent_state["final_trade_decision"] = payload
+
+        if self.graph is not None:
+            final_state = self._run_graph_from_state(init_agent_state)
+            self.curr_state = final_state
+            self.last_overnight_decision = final_state.get("final_trade_decision", payload)
+            try:
+                self.last_overnight_processed_signal = self.process_signal(self.last_overnight_decision)
+            except Exception:
+                self.last_overnight_processed_signal = self.last_overnight_decision
+            final_state["last_overnight_decision"] = self.last_overnight_decision
+            final_state["last_overnight_processed_signal"] = self.last_overnight_processed_signal
+            final_state["overnight_candidate_payload"] = payload
+            self._log_state(trade_date, final_state)
+            return final_state, self.last_overnight_decision
+
+        self.curr_state = init_agent_state
+        self.last_overnight_decision = payload
+        self.last_overnight_processed_signal = payload
+        init_agent_state["last_overnight_decision"] = payload
+        init_agent_state["last_overnight_processed_signal"] = payload
+        init_agent_state["overnight_candidate_payload"] = payload
+        self._log_state(trade_date, init_agent_state)
+        return init_agent_state, payload
+
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
+            "strategy_mode": final_state.get("strategy_mode", "single_stock"),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
             "global_market_context": final_state.get("global_market_context", ""),
+            "overnight_context": final_state.get("overnight_context", ""),
+            "candidate_universe_summary": final_state.get("candidate_universe_summary", ""),
+            "candidate_snapshot": final_state.get("candidate_snapshot", ""),
+            "baseline_reference_picks": final_state.get("baseline_reference_picks", ""),
+            "strict_risk_reference_picks": final_state.get("strict_risk_reference_picks", ""),
+            "screened_candidates": final_state.get("screened_candidates", ""),
+            "selected_candidates": final_state.get("selected_candidates", ""),
+            "rejected_candidates": final_state.get("rejected_candidates", ""),
+            "selection_constraints": final_state.get("selection_constraints", ""),
+            "selection_rationale": final_state.get("selection_rationale", ""),
+            "override_reasons": final_state.get("override_reasons", ""),
+            "rejected_reason_map": final_state.get("rejected_reason_map", ""),
+            "portfolio_construction_plan": final_state.get("portfolio_construction_plan", ""),
+            "final_portfolio": final_state.get("final_portfolio", ""),
+            "overnight_candidate_payload": final_state.get("overnight_candidate_payload", ""),
+            "last_overnight_decision": final_state.get("last_overnight_decision", ""),
+            "last_overnight_processed_signal": final_state.get("last_overnight_processed_signal", ""),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],
@@ -238,7 +426,7 @@ class TradingAgentsGraph:
                     "judge_decision"
                 ],
             },
-            "trader_investment_decision": final_state["trader_investment_plan"],
+            "trader_investment_decision": final_state.get("trader_investment_plan", ""),
             "risk_debate_state": {
                 "aggressive_history": final_state["risk_debate_state"]["aggressive_history"],
                 "conservative_history": final_state["risk_debate_state"]["conservative_history"],
@@ -246,8 +434,8 @@ class TradingAgentsGraph:
                 "history": final_state["risk_debate_state"]["history"],
                 "judge_decision": final_state["risk_debate_state"]["judge_decision"],
             },
-            "investment_plan": final_state["investment_plan"],
-            "final_trade_decision": final_state["final_trade_decision"],
+            "investment_plan": final_state.get("investment_plan", ""),
+            "final_trade_decision": final_state.get("final_trade_decision", ""),
         }
 
         # Save to file

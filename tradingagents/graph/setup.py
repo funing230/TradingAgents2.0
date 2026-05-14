@@ -1,15 +1,96 @@
 # TradingAgents/graph/setup.py
 
 from typing import Dict, Any, Optional
+import json
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.dataflows.interface import route_to_vendor
 
 from .conditional_logic import ConditionalLogic
 from .global_context import create_global_context_collector
+
+
+def create_overnight_candidate_builder(default_top_k: int = 20, default_top_n: int = 5):
+    """Create a lightweight node that prepares overnight candidate context.
+
+    The node is a no-op for legacy single-stock mode.
+    For overnight mode it fetches candidate payload/summary from the local
+    provider layer and writes graph-ready state fields before analysts run.
+    """
+
+    def overnight_candidate_builder(state):
+        if state.get("strategy_mode", "single_stock") != "overnight":
+            return {
+                "overnight_context": state.get("overnight_context", ""),
+                "candidate_universe_summary": state.get("candidate_universe_summary", ""),
+                "candidate_snapshot": state.get("candidate_snapshot", ""),
+                "selection_constraints": state.get("selection_constraints", ""),
+            }
+
+        trade_date = str(state.get("trade_date", ""))
+        if not trade_date:
+            return {
+                "overnight_context": "",
+                "candidate_universe_summary": "",
+                "candidate_snapshot": "",
+                "selection_constraints": json.dumps(
+                    {"top_n": default_top_n, "candidate_pool_size": default_top_k},
+                    ensure_ascii=False,
+                ),
+            }
+
+        constraints_raw = state.get("selection_constraints", "")
+        if constraints_raw:
+            try:
+                constraints = json.loads(constraints_raw)
+                if constraints.get("candidate_source") == "live_preclose_buffer":
+                    return {
+                        "messages": state.get("messages", []),
+                        "overnight_context": state.get("overnight_context", ""),
+                        "candidate_universe_summary": state.get("candidate_universe_summary", ""),
+                        "candidate_snapshot": state.get("candidate_snapshot", ""),
+                        "screened_candidates": state.get("screened_candidates", state.get("candidate_snapshot", "")),
+                        "selected_candidates": state.get("selected_candidates", state.get("final_portfolio", "")),
+                        "final_portfolio": state.get("final_portfolio", state.get("selected_candidates", "")),
+                        "selection_constraints": constraints_raw,
+                    }
+            except Exception:
+                pass
+
+        top_k = default_top_k
+        top_n = default_top_n
+        if constraints_raw:
+            try:
+                constraints = json.loads(constraints_raw)
+                top_k = int(constraints.get("candidate_pool_size", top_k))
+                top_n = int(constraints.get("top_n", top_n))
+            except Exception:
+                pass
+
+        payload = route_to_vendor("get_overnight_candidate_payload", trade_date, top_k)
+        summary = route_to_vendor("get_overnight_candidate_summary", trade_date, top_k)
+        candidates = route_to_vendor("get_overnight_candidates", trade_date, top_k)
+
+        selection_constraints = {
+            "top_n": top_n,
+            "candidate_pool_size": top_k,
+        }
+        return {
+            "messages": [("human", payload)],
+            "overnight_context": payload,
+            "candidate_universe_summary": json.dumps(summary, ensure_ascii=False, indent=2),
+            "candidate_snapshot": candidates.to_json(orient="records", force_ascii=False),
+            "screened_candidates": candidates.to_json(orient="records", force_ascii=False),
+            "selected_candidates": candidates.head(top_n).to_json(orient="records", force_ascii=False),
+            "final_portfolio": candidates.head(top_n).to_json(orient="records", force_ascii=False),
+            "selection_constraints": json.dumps(selection_constraints, ensure_ascii=False, indent=2),
+        }
+
+    return overnight_candidate_builder
 
 
 class GraphSetup:
@@ -136,6 +217,7 @@ class GraphSetup:
 
         # Add Global Context Collector node (runs before analysts)
         workflow.add_node("Global Context", create_global_context_collector())
+        workflow.add_node("Overnight Candidate Builder", create_overnight_candidate_builder())
 
         # Add analyst nodes to the graph
         for analyst_type, node in analyst_nodes.items():
@@ -156,10 +238,11 @@ class GraphSetup:
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # Define edges
-        # Start with Global Context, then first analyst
+        # Start with Global Context, then Overnight Candidate Builder, then first analyst
         first_analyst = selected_analysts[0]
         workflow.add_edge(START, "Global Context")
-        workflow.add_edge("Global Context", f"{first_analyst.capitalize()} Analyst")
+        workflow.add_edge("Global Context", "Overnight Candidate Builder")
+        workflow.add_edge("Overnight Candidate Builder", f"{first_analyst.capitalize()} Analyst")
 
         # Connect analysts in sequence
         for i, analyst_type in enumerate(selected_analysts):

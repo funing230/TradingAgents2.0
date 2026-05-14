@@ -70,6 +70,39 @@ def _fetch_global_news(trade_date: str) -> str:
     return "Global news data unavailable."
 
 
+def _is_cn_or_overnight_scope(state) -> bool:
+    """Whether global context should be collected for this state."""
+    strategy_mode = str(state.get("strategy_mode", "single_stock") or "single_stock")
+    if strategy_mode == "overnight":
+        return True
+    ticker = state.get("company_of_interest", "")
+    return detect_market(ticker) == "cn"
+
+
+def _build_overnight_context_section(state) -> str:
+    """Build overnight-specific context section from graph state."""
+    strategy_mode = str(state.get("strategy_mode", "single_stock") or "single_stock")
+    if strategy_mode != "overnight":
+        return ""
+
+    lines = ["## Overnight Candidate Context"]
+    candidate_summary = state.get("candidate_universe_summary", "")
+    selection_constraints = state.get("selection_constraints", "")
+    candidate_snapshot = state.get("candidate_snapshot", "")
+
+    if candidate_summary:
+        lines.append("### Candidate Universe Summary")
+        lines.append(str(candidate_summary))
+    if selection_constraints:
+        lines.append("### Selection Constraints")
+        lines.append(str(selection_constraints))
+    if candidate_snapshot:
+        lines.append("### Candidate Snapshot")
+        lines.append(str(candidate_snapshot))
+
+    return "\n".join(lines)
+
+
 def create_global_context_collector():
     """Create a graph node that collects global market context.
 
@@ -79,28 +112,44 @@ def create_global_context_collector():
 
     def global_context_node(state):
         trade_date = state.get("trade_date", "")
-        ticker = state.get("company_of_interest", "")
-        market = detect_market(ticker)
 
-        # Only collect US context when analyzing A-share stocks
-        if market != "cn":
+        if not _is_cn_or_overnight_scope(state):
             return {"global_market_context": ""}
 
-        sections = []
-        sections.append("# Global Market Context (Auto-collected)")
-        sections.append(f"Trade date: {trade_date}\n")
+        try:
+            sections = []
+            sections.append("# Global Market Context (Auto-collected)")
+            sections.append(f"Trade date: {trade_date}\n")
 
-        # 1. US index summary
-        sections.append("## US Market Indices (Recent)")
-        sections.append(_fetch_index_summary(trade_date))
+            # 1. US index summary
+            sections.append("## US Market Indices (Recent)")
+            sections.append(_fetch_index_summary(trade_date))
 
-        # 2. Global macro news
-        sections.append("## Global Macro News")
-        sections.append(_fetch_global_news(trade_date))
+            # 2. Global macro news
+            sections.append("## Global Macro News")
+            sections.append(_fetch_global_news(trade_date))
 
-        context = "\n".join(sections)
-        logger.info("Global context collected: %d chars", len(context))
+            overnight_section = _build_overnight_context_section(state)
+            if overnight_section:
+                sections.append(overnight_section)
 
-        return {"global_market_context": context}
+            context = "\n".join(sections)
+            logger.info("Global context collected: %d chars", len(context))
+            return {"global_market_context": context}
+        except Exception as e:
+            logger.warning("Global context soft-failed: %s", e)
+            fallback_sections = [
+                "# Global Market Context (Auto-collected)",
+                f"Trade date: {trade_date}",
+                "",
+                "## US Market Indices (Recent)",
+                "US index data unavailable.",
+                "## Global Macro News",
+                "Global news data unavailable.",
+            ]
+            overnight_section = _build_overnight_context_section(state)
+            if overnight_section:
+                fallback_sections.append(overnight_section)
+            return {"global_market_context": "\n".join(fallback_sections)}
 
     return global_context_node

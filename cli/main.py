@@ -1199,9 +1199,151 @@ def run_analysis():
         display_complete_report(final_state)
 
 
+def build_cli_config(strategy_mode: str = "single_stock"):
+    """Build a minimal CLI config for direct command execution."""
+    config = DEFAULT_CONFIG.copy()
+    config["strategy_mode"] = strategy_mode
+    return config
+
+
+def run_direct_cli_analysis(
+    strategy_mode: str = "single_stock",
+    ticker: Optional[str] = None,
+    trade_date: Optional[str] = None,
+    overnight_top_n: Optional[int] = None,
+    overnight_candidate_pool_size: Optional[int] = None,
+    analysts: Optional[str] = None,
+):
+    """Run a minimal direct CLI path without the interactive dashboard.
+
+    - single_stock: requires ticker + trade_date and runs the normal graph entry.
+    - overnight: requires trade_date and runs the overnight bootstrap entry.
+    """
+    config = build_cli_config(strategy_mode=strategy_mode)
+    if overnight_top_n is not None:
+        config["overnight_top_n"] = overnight_top_n
+    if overnight_candidate_pool_size is not None:
+        config["overnight_candidate_pool_size"] = overnight_candidate_pool_size
+
+    selected_analyst_keys = ["market", "social", "news", "fundamentals"]
+    if analysts:
+        requested = [a.strip().lower() for a in analysts.split(",") if a.strip()]
+        selected_analyst_keys = [a for a in ANALYST_ORDER if a in requested] or selected_analyst_keys
+
+    graph = TradingAgentsGraph(
+        selected_analyst_keys,
+        config=config,
+        debug=False,
+        run_probe=False,
+    )
+
+    if strategy_mode == "overnight":
+        if not trade_date:
+            raise typer.BadParameter("trade_date is required when --strategy-mode overnight")
+        final_state, payload = graph.propagate_overnight(
+            trade_date,
+            top_k=config.get("overnight_candidate_pool_size"),
+            top_n=config.get("overnight_top_n"),
+        )
+        return {
+            "route": "overnight",
+            "trade_date": trade_date,
+            "strategy_mode": "overnight",
+            "selected_analysts": selected_analyst_keys,
+            "candidate_count_hint": config.get("overnight_candidate_pool_size"),
+            "top_n": config.get("overnight_top_n"),
+            "final_state": final_state,
+            "payload": payload,
+        }
+
+    if not ticker:
+        raise typer.BadParameter("ticker is required when --strategy-mode single_stock")
+    if not trade_date:
+        raise typer.BadParameter("trade_date is required when --strategy-mode single_stock")
+    final_state, decision = graph.propagate(ticker, trade_date)
+    return {
+        "route": "single_stock",
+        "ticker": ticker,
+        "trade_date": trade_date,
+        "strategy_mode": "single_stock",
+        "selected_analysts": selected_analyst_keys,
+        "final_state": final_state,
+        "decision": decision,
+    }
+
+
 @app.command()
-def analyze():
-    run_analysis()
+def analyze(
+    strategy_mode: str = typer.Option(
+        "single_stock",
+        "--strategy-mode",
+        help="Execution mode: single_stock or overnight",
+    ),
+    ticker: Optional[str] = typer.Option(
+        None,
+        "--ticker",
+        help="Ticker for single_stock mode",
+    ),
+    trade_date: Optional[str] = typer.Option(
+        None,
+        "--trade-date",
+        help="Trade date in YYYY-MM-DD",
+    ),
+    overnight_top_n: Optional[int] = typer.Option(
+        None,
+        "--overnight-top-n",
+        help="Top-N holdings target for overnight mode",
+    ),
+    overnight_candidate_pool_size: Optional[int] = typer.Option(
+        None,
+        "--overnight-candidate-pool-size",
+        help="Candidate pool size for overnight mode",
+    ),
+    analysts: Optional[str] = typer.Option(
+        None,
+        "--analysts",
+        help="Comma-separated analysts, e.g. market,news,fundamentals",
+    ),
+):
+    normalized_strategy_mode = (strategy_mode or "single_stock").strip().lower()
+    if normalized_strategy_mode not in {"single_stock", "overnight"}:
+        raise typer.BadParameter("strategy_mode must be one of: single_stock, overnight")
+
+    # Backward compatibility: no direct CLI args means keep the original interactive flow.
+    if (
+        ticker is None
+        and trade_date is None
+        and overnight_top_n is None
+        and overnight_candidate_pool_size is None
+        and analysts is None
+        and normalized_strategy_mode == "single_stock"
+    ):
+        run_analysis()
+        return
+
+    result = run_direct_cli_analysis(
+        strategy_mode=normalized_strategy_mode,
+        ticker=ticker,
+        trade_date=trade_date,
+        overnight_top_n=overnight_top_n,
+        overnight_candidate_pool_size=overnight_candidate_pool_size,
+        analysts=analysts,
+    )
+
+    if result["route"] == "overnight":
+        console.print("[green]✓ Overnight analysis route selected[/green]")
+        console.print(f"Trade date: {result['trade_date']}")
+        console.print(f"Analysts: {', '.join(result['selected_analysts'])}")
+        console.print(f"Candidate pool size: {result['candidate_count_hint']}")
+        console.print(f"Top N: {result['top_n']}")
+        console.print(Panel(result["payload"], title="Overnight Candidate Payload", border_style="green"))
+        return
+
+    console.print("[green]✓ Single-stock analysis route selected[/green]")
+    console.print(f"Ticker: {result['ticker']}")
+    console.print(f"Trade date: {result['trade_date']}")
+    console.print(f"Analysts: {', '.join(result['selected_analysts'])}")
+    console.print(Panel(str(result["decision"]), title="Final Decision", border_style="green"))
 
 
 if __name__ == "__main__":
